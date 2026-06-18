@@ -5,7 +5,7 @@ import asyncio
 
 app = FastAPI(title="Iframe DOM Extractor")
 
-async def extract_iframes(url: str, wait_ms: int = 4000):
+async def extract_iframes(url: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -25,13 +25,29 @@ async def extract_iframes(url: str, wait_ms: int = 4000):
             await browser.close()
             return {"error": f"navigation failed: {e}"}
 
-        # Wait for network to settle so the iframe has a chance to load.
+        # Wait for network to settle so the iframe has a chance to load
         try:
             await page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
-        # Extra grace period for lazy-loaded iframes / SPA rendering.
-        await page.wait_for_timeout(wait_ms)
+
+        # Wait for the Cloudflare Turnstile callback to redirect the iframe.
+        # The script appends '?_rcp=<32-char-token>' to the URL and reloads it.
+        print("Waiting for Turnstile verification and redirect...")
+        start_time = asyncio.get_event_loop().time()
+        timeout_sec = 25
+        
+        while asyncio.get_event_loop().time() - start_time < timeout_sec:
+            # Check if any frame's URL now contains the '_rcp' parameter
+            if any("_rcp" in frame.url for frame in page.frames):
+                print("Redirect detected! Waiting for DOM to render...")
+                break
+            await asyncio.sleep(0.5)
+        else:
+            print("Timeout waiting for _rcp. Extracting current DOM...")
+
+        # Give the redirected iframe a moment to render its final DOM
+        await asyncio.sleep(2)
 
         frames_out = []
         main = page.main_frame
@@ -42,7 +58,6 @@ async def extract_iframes(url: str, wait_ms: int = 4000):
             try:
                 html = await frame.content()
                 entry["dom"] = html
-                # A couple of convenience fields:
                 try:
                     title = await frame.title()
                     entry["title"] = title
@@ -71,7 +86,6 @@ async def root(url: str = Query(..., description="x.com URL that embeds y.com"))
             "iframes": iframes,
         }
     )
-
 
 @app.get("/healthz")
 async def healthz():
