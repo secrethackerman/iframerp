@@ -1,23 +1,44 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 import asyncio
+import random
 
 app = FastAPI(title="Iframe DOM Extractor")
 
 async def extract_iframes(url: str):
     async with async_playwright() as p:
+        # Add arguments to mask headless detection
         browser = await p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled", # Crucial for Cloudflare
+                "--disable-features=IsolateOrigins,site-per-process"
+            ],
         )
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
+            ),
+            viewport={"width": 1920, "height": 1080},
         )
+        
+        # Extra stealth headers
+        await context.set_extra_http_headers({
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Linux"',
+        })
+
         page = await context.new_page()
+        
+        # Apply stealth to the page
+        await stealth_async(page)
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -25,35 +46,46 @@ async def extract_iframes(url: str):
             await browser.close()
             return {"error": f"navigation failed: {e}"}
 
-        # Wait for network to settle so the iframe has a chance to load
         try:
             await page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
 
+        # Simulate human mouse movements to trigger invisible Cloudflare Turnstile
+        print("Simulating human interaction to trigger Turnstile...")
+        for _ in range(5):
+            x = random.randint(100, 800)
+            y = random.randint(100, 600)
+            await page.mouse.move(x, y)
+            await asyncio.sleep(random.uniform(0.2, 0.6))
+
         # Wait for the Cloudflare Turnstile callback to redirect the iframe.
-        # The script appends '?_rcp=<32-char-token>' to the URL and reloads it.
         print("Waiting for Turnstile verification and redirect...")
         start_time = asyncio.get_event_loop().time()
-        timeout_sec = 25
+        timeout_sec = 30
         
         while asyncio.get_event_loop().time() - start_time < timeout_sec:
-            # Check if any frame's URL now contains the '_rcp' parameter
             if any("_rcp" in frame.url for frame in page.frames):
                 print("Redirect detected! Waiting for DOM to render...")
                 break
+            # Keep moving the mouse slightly in case it needs more interaction
+            await page.mouse.move(random.randint(200, 600), random.randint(200, 600))
             await asyncio.sleep(0.5)
         else:
             print("Timeout waiting for _rcp. Extracting current DOM...")
 
         # Give the redirected iframe a moment to render its final DOM
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
         frames_out = []
         main = page.main_frame
         for frame in page.frames:
             if frame == main:
                 continue
+            # Filter out the cloudflare challenge iframe itself, we only want the content
+            if "challenges.cloudflare.com" in frame.url:
+                continue
+                
             entry = {"url": frame.url, "name": frame.name or None}
             try:
                 html = await frame.content()
