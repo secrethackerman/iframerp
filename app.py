@@ -9,7 +9,7 @@ app = FastAPI(title="Iframe DOM Extractor")
 async def extract_iframes(url: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,  # RUN HEADFUL! Xvfb will handle the display in Docker.
+            headless=True,  # Patchright handles headless stealth natively
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -45,31 +45,55 @@ async def extract_iframes(url: str):
         except Exception:
             pass
 
-        # Simulate human mouse movements to trigger invisible Cloudflare Turnstile
-        print("Simulating human interaction to trigger Turnstile...")
-        for _ in range(5):
+        print("Attempting to trigger Cloudflare Turnstile...")
+        
+        # 1. Simulate human mouse movements on the main page
+        for _ in range(3):
             x = random.randint(100, 800)
             y = random.randint(100, 600)
             await page.mouse.move(x, y)
-            await asyncio.sleep(random.uniform(0.2, 0.6))
+            await asyncio.sleep(random.uniform(0.2, 0.5))
 
-        # Wait for the Cloudflare Turnstile callback to redirect the iframe.
+        # 2. Try to click the Cloudflare checkbox if it appears
+        try:
+            cf_frame = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
+            # Wait for the checkbox to be ready (it might take a second to render)
+            await cf_frame.locator("input[type='checkbox']").wait_for(timeout=5000)
+            await cf_frame.locator("input[type='checkbox']").click()
+            print("Clicked Cloudflare checkbox successfully!")
+        except Exception as e:
+            print(f"Checkbox click failed or not found: {e}")
+            # Fallback: Click the coordinates of the Turnstile widget
+            try:
+                # The turnstile iframe is usually wrapped in a div with class 'cf-turnstile'
+                widget = page.locator("div.cf-turnstile")
+                box = await widget.bounding_box()
+                if box:
+                    # The checkbox is typically around x=30, y=height/2 relative to the widget
+                    click_x = box['x'] + 30
+                    click_y = box['y'] + (box['height'] / 2)
+                    await page.mouse.move(click_x, click_y)
+                    await asyncio.sleep(0.5)
+                    await page.mouse.click(click_x, click_y)
+                    print("Clicked Turnstile widget via coordinates.")
+            except Exception as e2:
+                print(f"Coordinate click also failed: {e2}")
+
+        # 3. Wait for the Cloudflare Turnstile callback to redirect the iframe.
         print("Waiting for Turnstile verification and redirect...")
         start_time = asyncio.get_event_loop().time()
-        timeout_sec = 30
+        timeout_sec = 20
         
         while asyncio.get_event_loop().time() - start_time < timeout_sec:
             if any("_rcp" in frame.url for frame in page.frames):
                 print("Redirect detected! Waiting for DOM to render...")
                 break
-            # Keep moving the mouse slightly in case it needs more interaction
-            await page.mouse.move(random.randint(200, 600), random.randint(200, 600))
             await asyncio.sleep(0.5)
         else:
             print("Timeout waiting for _rcp. Extracting current DOM...")
 
         # Give the redirected iframe a moment to render its final DOM
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
         frames_out = []
         main = page.main_frame
@@ -99,7 +123,6 @@ async def extract_iframes(url: str):
 
 @app.get("/")
 async def root(url: str = Query(None, description="x.com URL that embeds y.com")):
-    # Handle health checks gracefully
     if not url:
         return JSONResponse({"status": "ok", "message": "Service is running. Pass ?url=<site> to extract iframes."})
 
