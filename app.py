@@ -8,9 +8,8 @@ app = FastAPI(title="Iframe DOM Extractor")
 
 async def extract_iframes(url: str):
     async with async_playwright() as p:
-        # Patchright handles the stealth masking natively
         browser = await p.chromium.launch(
-            headless=True,
+            headless=False,  # RUN HEADFUL! Xvfb will handle the display in Docker.
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -99,7 +98,11 @@ async def extract_iframes(url: str):
 
 
 @app.get("/")
-async def root(url: str = Query(..., description="x.com URL that embeds y.com")):
+async def root(url: str = Query(None, description="x.com URL that embeds y.com")):
+    # Handle health checks gracefully
+    if not url:
+        return JSONResponse({"status": "ok", "message": "Service is running. Pass ?url=<site> to extract iframes."})
+
     try:
         iframes = await extract_iframes(url)
     except Exception as e:
