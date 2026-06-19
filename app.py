@@ -9,7 +9,7 @@ app = FastAPI(title="Iframe DOM Extractor")
 async def extract_iframes(url: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=True,  # Patchright handles headless stealth natively
+            headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -54,30 +54,31 @@ async def extract_iframes(url: str):
             await page.mouse.move(x, y)
             await asyncio.sleep(random.uniform(0.2, 0.5))
 
-        # 2. Try to click the Cloudflare checkbox if it appears
+        # 2. Wait for the Cloudflare iframe to appear and click the checkbox
         try:
-            cf_frame = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
-            # Wait for the checkbox to be ready (it might take a second to render)
-            await cf_frame.locator("input[type='checkbox']").wait_for(timeout=5000)
-            await cf_frame.locator("input[type='checkbox']").click()
-            print("Clicked Cloudflare checkbox successfully!")
+            # Wait for the turnstile iframe to attach to the DOM
+            cf_iframe_element = await page.wait_for_selector("iframe[src*='challenges.cloudflare.com']", timeout=10000)
+            
+            # Give the iframe a moment to render its internal checkbox
+            await asyncio.sleep(2)
+            
+            # Get the bounding box of the iframe itself
+            box = await cf_iframe_element.bounding_box()
+            if box:
+                print(f"Cloudflare iframe found at {box}. Clicking checkbox...")
+                # The checkbox is usually around x=28, y=32 inside the iframe
+                click_x = box['x'] + 28
+                click_y = box['y'] + 32
+                
+                # Move human-like and click
+                await page.mouse.move(click_x, click_y, steps=10)
+                await asyncio.sleep(0.5)
+                await page.mouse.click(click_x, click_y)
+                print("Clicked Cloudflare checkbox!")
+            else:
+                print("Could not get bounding box of Cloudflare iframe.")
         except Exception as e:
-            print(f"Checkbox click failed or not found: {e}")
-            # Fallback: Click the coordinates of the Turnstile widget
-            try:
-                # The turnstile iframe is usually wrapped in a div with class 'cf-turnstile'
-                widget = page.locator("div.cf-turnstile")
-                box = await widget.bounding_box()
-                if box:
-                    # The checkbox is typically around x=30, y=height/2 relative to the widget
-                    click_x = box['x'] + 30
-                    click_y = box['y'] + (box['height'] / 2)
-                    await page.mouse.move(click_x, click_y)
-                    await asyncio.sleep(0.5)
-                    await page.mouse.click(click_x, click_y)
-                    print("Clicked Turnstile widget via coordinates.")
-            except Exception as e2:
-                print(f"Coordinate click also failed: {e2}")
+            print(f"Cloudflare iframe not found or click failed: {e}")
 
         # 3. Wait for the Cloudflare Turnstile callback to redirect the iframe.
         print("Waiting for Turnstile verification and redirect...")
@@ -100,9 +101,7 @@ async def extract_iframes(url: str):
         for frame in page.frames:
             if frame == main:
                 continue
-            if "challenges.cloudflare.com" in frame.url:
-                continue
-                
+            # We no longer filter out cloudflare.com so we can see if it threw an error
             entry = {"url": frame.url, "name": frame.name or None}
             try:
                 html = await frame.content()
