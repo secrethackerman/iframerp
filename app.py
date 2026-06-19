@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
-from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from patchright.async_api import async_playwright
 import asyncio
 import random
 
@@ -9,13 +8,13 @@ app = FastAPI(title="Iframe DOM Extractor")
 
 async def extract_iframes(url: str):
     async with async_playwright() as p:
-        # Add arguments to mask headless detection
+        # Patchright handles the stealth masking natively
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled", # Crucial for Cloudflare
+                "--disable-blink-features=AutomationControlled",
                 "--disable-features=IsolateOrigins,site-per-process"
             ],
         )
@@ -27,7 +26,6 @@ async def extract_iframes(url: str):
             viewport={"width": 1920, "height": 1080},
         )
         
-        # Extra stealth headers
         await context.set_extra_http_headers({
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
@@ -36,9 +34,6 @@ async def extract_iframes(url: str):
         })
 
         page = await context.new_page()
-        
-        # Apply stealth to the page
-        await stealth_async(page)
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -82,7 +77,6 @@ async def extract_iframes(url: str):
         for frame in page.frames:
             if frame == main:
                 continue
-            # Filter out the cloudflare challenge iframe itself, we only want the content
             if "challenges.cloudflare.com" in frame.url:
                 continue
                 
