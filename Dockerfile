@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y fonts-liberation fonts-noto-color-emoji
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Patchright's patched Chromium binary
+RUN patchright install chromium
+
 COPY app.py .
 
 EXPOSE 8080
